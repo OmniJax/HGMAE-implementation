@@ -11,7 +11,6 @@ from dgl.utils import expand_as_pair
 # from openhgnn.layers.MetapathConv import MetapathConv
 # from openhgnn.utils import extract_metapaths
 # from openhgnn.layers.macro_layer.SemanticConv import SemanticAttention
-
 class NormLayer(nn.Module):
     def __init__(self, hidden_dim, norm_type):
         super().__init__()
@@ -76,6 +75,8 @@ def create_norm(name):
         return nn.BatchNorm1d
     elif name == "graphnorm":
         return partial(NormLayer, norm_type="groupnorm")
+    elif name == 'none':
+        return None
     else:
         return None
 
@@ -321,13 +322,13 @@ class HANLayer(nn.Module):
         The output feature
     """
 
-    def __init__(self, num_metapath, in_dim, out_dim, layer_num_heads,
+    def __init__(self, num_metapaths, in_dim, out_dim, layer_num_heads,
                  feat_drop, attn_drop, negative_slope, residual, activation, norm, concat_out):
         super(HANLayer, self).__init__()
 
         # One GAT layer for each meta path based adjacency matrix
         self.gat_layers = nn.ModuleList()  # openhgnn里用的是nn.ModuleDict
-        for i in range(num_metapath):
+        for i in range(num_metapaths):
             self.gat_layers.append(GATConv(
                 in_dim, out_dim, layer_num_heads,
                 feat_drop, attn_drop, negative_slope, residual, activation, norm=norm, concat_out=concat_out))
@@ -357,7 +358,7 @@ class HAN(nn.Module):
 
     Parameters
     ------------
-    num_metapath : int
+    num_metapaths : int
         Number of metapaths.
     in_dim : int
         Input feature dimension.
@@ -378,7 +379,7 @@ class HAN(nn.Module):
     '''
 
     def __init__(self,
-                 num_metapath,
+                 num_metapaths,
                  in_dim,
                  hidden_dim,
                  out_dim,
@@ -395,6 +396,7 @@ class HAN(nn.Module):
                  encoding=False
                  ):
         super(HAN, self).__init__()
+        self.num_metapaths=num_metapaths
         self.out_dim = out_dim
         self.num_heads = num_heads
         self.num_layers = num_layers
@@ -408,34 +410,32 @@ class HAN(nn.Module):
         last_norm = norm if encoding else None
 
         if num_layers == 1:
-            self.han_layers.append(HANLayer(num_metapath,
+            self.han_layers.append(HANLayer(num_metapaths,
                                             in_dim, out_dim, num_out_heads,
                                             feat_drop, attn_drop, negative_slope, last_residual, last_activation,
                                             norm=last_norm, concat_out=concat_out))
         else:
             # input projection (no residual)
-            self.han_layers.append(HANLayer(num_metapath,
+            self.han_layers.append(HANLayer(num_metapaths,
                                             in_dim, hidden_dim, num_heads,
                                             feat_drop, attn_drop, negative_slope, residual, self.activation, norm=norm,
                                             concat_out=concat_out))
             # hidden layers
             for l in range(1, num_layers - 1):
                 # due to multi-head, the in_dim = hidden_dim * num_heads
-                self.han_layers.append(HANLayer(num_metapath,
+                self.han_layers.append(HANLayer(num_metapaths,
                                                 hidden_dim * num_heads, hidden_dim, num_heads,
                                                 feat_drop, attn_drop, negative_slope, residual, self.activation,
                                                 norm=norm, concat_out=concat_out))
             # output projection
-            self.han_layers.append(HANLayer(num_metapath,
+            self.han_layers.append(HANLayer(num_metapaths,
                                             hidden_dim * num_heads, out_dim, num_out_heads,
                                             feat_drop, attn_drop, negative_slope, last_residual,
                                             activation=last_activation, norm=last_norm, concat_out=concat_out))
 
-    def forward(self, gs: List[dgl.DGLGraph], h: torch.Tensor):
+    def forward(self, gs: list[dgl.DGLGraph], h: torch.Tensor):
         # gs is masked metapath_reachable_graph
         for han_layer in self.han_layers:
             h, att_mp = han_layer(gs, h)
         return h, att_mp
         # 用openhgnn实现时， att_mp或许可以通过HAN.mod_dict[].get_emb
-
-
