@@ -51,34 +51,18 @@ class NormLayer(nn.Module):
         std = ((std.T / batch_list).T + 1e-6).sqrt()
         std = std.repeat_interleave(batch_list, dim=0)
         return self.weight * sub / std + self.bias
-
-
-def create_activation(name):
-    if name == "relu":
-        return nn.ReLU()
-    elif name == "gelu":
-        return nn.GELU()
-    elif name == "prelu":
-        return nn.PReLU()
-    elif name is None:
-        return nn.Identity()
-    elif name == "elu":
-        return nn.ELU()
-    else:
-        raise NotImplementedError(f"{name} is not implemented.")
-
-
-def create_norm(name):
-    if name == "layernorm":
-        return nn.LayerNorm
-    elif name == "batchnorm":
-        return nn.BatchNorm1d
-    elif name == "graphnorm":
-        return partial(NormLayer, norm_type="groupnorm")
-    elif name == 'none':
-        return None
-    else:
-        return None
+#
+# def create_norm(name):
+#     if name == "layernorm":
+#         return nn.LayerNorm
+#     elif name == "batchnorm":
+#         return nn.BatchNorm1d
+#     elif name == "graphnorm":
+#         return partial(NormLayer, norm_type="groupnorm")
+#     elif name == 'none':
+#         return None
+#     else:
+#         return None
 
 
 class SemanticAttention(nn.Module):
@@ -112,9 +96,8 @@ class GATConv(nn.Module):
                  residual=False,
                  activation=None,
                  allow_zero_in_degree=False,
-                 bias=True,
-                 norm=None,
-                 concat_out=True):
+                 bias=True
+                 ):
         super(GATConv, self).__init__()
         self._num_heads = num_heads
         self._in_src_feats, self._in_dst_feats = expand_as_pair(in_feats)
@@ -149,10 +132,10 @@ class GATConv(nn.Module):
         self.reset_parameters()
         self.activation = activation
 
-        self.concat_out = concat_out  # 改动：相比于dgl，新增
-        self.norm = norm  # 改动：增
-        if norm is not None:
-            self.norm = norm(num_heads * out_feats)
+        # self.concat_out = concat_out  # 改动：相比于dgl，新增，默认concat_out
+        # self.norm = norm(num_heads * out_feats)
+        self.norm=nn.BatchNorm1d(num_heads*out_feats)
+
 
     def reset_parameters(self):
         """
@@ -276,13 +259,16 @@ class GATConv(nn.Module):
                 rst = rst + resval
 
             # 改：增加了concat_out，可外提
-            if self.concat_out:
-                rst = rst.flatten(1)
-            else:
-                rst = torch.mean(rst, dim=1)
+            # 默认flatten，concat_out
+            # if self.concat_out:
+            rst = rst.flatten(1)
+            # else:
+            #     rst = torch.mean(rst, dim=1)
+
             # 改：增加了norm，可外提
-            if self.norm is not None:
-                rst = self.norm(rst)
+            # 默认batchnorm
+            # if self.norm is not None:
+            rst = self.norm(rst)
 
             # activation
             if self.activation:
@@ -323,7 +309,7 @@ class HANLayer(nn.Module):
     """
 
     def __init__(self, num_metapaths, in_dim, out_dim, layer_num_heads,
-                 feat_drop, attn_drop, negative_slope, residual, activation, norm, concat_out):
+                 feat_drop, attn_drop, negative_slope, residual, activation):
         super(HANLayer, self).__init__()
 
         # One GAT layer for each meta path based adjacency matrix
@@ -331,7 +317,7 @@ class HANLayer(nn.Module):
         for i in range(num_metapaths):
             self.gat_layers.append(GATConv(
                 in_dim, out_dim, layer_num_heads,
-                feat_drop, attn_drop, negative_slope, residual, activation, norm=norm, concat_out=concat_out))
+                feat_drop, attn_drop, negative_slope, residual, activation))
         self.semantic_attention = SemanticAttention(in_size=out_dim * layer_num_heads)  # macro
 
     def forward(self, gs, h):
@@ -386,7 +372,6 @@ class HAN(nn.Module):
                  num_layers,
                  num_heads,
                  num_out_heads,
-                 activation,
                  feat_drop,
                  attn_drop,
                  negative_slope,
@@ -403,8 +388,8 @@ class HAN(nn.Module):
         self.han_layers = nn.ModuleList()
         self.concat_out = concat_out
 
-        self.activation = create_activation(activation)
-        last_activation = create_activation(activation) if encoding else create_activation(None)
+        self.activation=nn.PReLU()
+        last_activation = nn.PReLU() if encoding else None
 
         last_residual = (encoding and residual)
         last_norm = norm if encoding else None
