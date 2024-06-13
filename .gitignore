@@ -1,0 +1,6 @@
+.ipynb_checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+.HGMAE-master/
+.myHGMAE/openhgnn/
+*/__pycache__

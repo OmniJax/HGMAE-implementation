@@ -76,6 +76,7 @@ acm:
   mp_edge_alpha_l: 3
   mp_edge_mask_rate: 0.7
   mp_edge_recon_loss_weight: 1
+
   mps_batch_size: 256
   mps_context_size: 3
   mps_embedding_dim: 64
@@ -84,6 +85,8 @@ acm:
   mps_num_negative_samples: 3
   mps_walk_length: 10
   mps_walks_per_node: 3
+
+
   n_labels: 3
   negative_slope: 0.2
   nei_num: 2

@@ -9,7 +9,9 @@ from dgl import DropEdge
 from functools import partial
 import torch.nn.functional as F
 
-
+from openhgnn.sampler import random_walk_sampler
+from dgl.nn.pytorch import MetaPath2Vec
+from openhgnn.sampler.random_walk_sampler import RandomWalkSampler
 def sce_loss(x, y, gamma=3):
     x = F.normalize(x, p=2, dim=-1)
     y = F.normalize(y, p=2, dim=-1)
@@ -75,7 +77,6 @@ class HGMAE(BaseModel):
     attr_unchanged_rate : float
         Leaving a percentage of nodes unchanged by utilizing the origin attribute, with the attr_unchanged_rate. Defaults: ``0.2``
 
-
     '''
 
     @classmethod
@@ -114,7 +115,6 @@ class HGMAE(BaseModel):
             mp2vec_feat_gamma=args.mp2vec_feat_gamma,
             mp2vec_feat_drop=args.mp2vec_feat_drop,
         )
-
     def __init__(self, metapaths_dict, category,
                  in_dim, hidden_dim, num_layers, num_heads, num_out_heads,
                  feat_drop, attn_drop, negative_slope=0.2, residual=False,
@@ -375,7 +375,7 @@ class HGMAE(BaseModel):
         return loss, enc_emb
 
 
-    def forward(self, hg: dgl.DGLHeteroGraph, h_dict, mp2vec_feat_dict=None,epoch=None):
+    def forward(self, hg: dgl.DGLHeteroGraph, h_dict, mp2vec_feat_dict=None, epoch=None):
 
         assert epoch is not None, "epoch should be a positive integer"
         # assert (mp2vec_feat_dict is not None and self.use_mp2vec_feat_pred) or \

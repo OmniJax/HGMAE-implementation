@@ -8,9 +8,9 @@ import dgl.function as fn
 from dgl.utils import expand_as_pair
 
 
-# from openhgnn.layers.MetapathConv import MetapathConv
-# from openhgnn.utils import extract_metapaths
-# from openhgnn.layers.macro_layer.SemanticConv import SemanticAttention
+# from ~openhgnn.layers.MetapathConv import MetapathConv
+# from ~openhgnn.utils import extract_metapaths
+# from ~openhgnn.layers.macro_layer.SemanticConv import SemanticAttention
 class NormLayer(nn.Module):
     def __init__(self, hidden_dim, norm_type):
         super().__init__()

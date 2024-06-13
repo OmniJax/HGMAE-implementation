@@ -32,7 +32,6 @@ acm:
 
   mps_batch_size: 256
   mps_context_size: 3
-
   mps_epoch: 1
   mps_lr: 0.001
   mps_num_negative_samples: 3
