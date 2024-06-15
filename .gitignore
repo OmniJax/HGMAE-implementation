@@ -3,4 +3,4 @@
 *.ipynb_checkpoints
 .HGMAE-master/
 .myHGMAE/openhgnn/
-*/__pycache__
+*/__pycache__/

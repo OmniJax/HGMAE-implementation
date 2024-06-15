@@ -7,7 +7,7 @@ from dgl.ops import edge_softmax
 import dgl.function as fn
 from dgl.utils import expand_as_pair
 
-
+from openhgnn.trainerflow import slice_trainer
 # from ~openhgnn.layers.MetapathConv import MetapathConv
 # from ~openhgnn.utils import extract_metapaths
 # from ~openhgnn.layers.macro_layer.SemanticConv import SemanticAttention
@@ -51,6 +51,8 @@ class NormLayer(nn.Module):
         std = ((std.T / batch_list).T + 1e-6).sqrt()
         std = std.repeat_interleave(batch_list, dim=0)
         return self.weight * sub / std + self.bias
+
+
 #
 # def create_norm(name):
 #     if name == "layernorm":
@@ -96,7 +98,8 @@ class GATConv(nn.Module):
                  residual=False,
                  activation=None,
                  allow_zero_in_degree=False,
-                 bias=True
+                 bias=True,
+                 norm=None
                  ):
         super(GATConv, self).__init__()
         self._num_heads = num_heads
@@ -133,9 +136,10 @@ class GATConv(nn.Module):
         self.activation = activation
 
         # self.concat_out = concat_out  # 改动：相比于dgl，新增，默认concat_out
-        # self.norm = norm(num_heads * out_feats)
-        self.norm=nn.BatchNorm1d(num_heads*out_feats)
-
+        # self.norm=nn.BatchNorm1d(num_heads*out_feats)
+        self.norm = norm
+        if norm is not None:
+            self.norm = norm(num_heads * out_feats)
 
     def reset_parameters(self):
         """
@@ -267,8 +271,8 @@ class GATConv(nn.Module):
 
             # 改：增加了norm，可外提
             # 默认batchnorm
-            # if self.norm is not None:
-            rst = self.norm(rst)
+            if self.norm is not None:
+                rst = self.norm(rst)
 
             # activation
             if self.activation:
@@ -309,7 +313,7 @@ class HANLayer(nn.Module):
     """
 
     def __init__(self, num_metapaths, in_dim, out_dim, layer_num_heads,
-                 feat_drop, attn_drop, negative_slope, residual, activation):
+                 feat_drop, attn_drop, negative_slope, residual, activation, norm):
         super(HANLayer, self).__init__()
 
         # One GAT layer for each meta path based adjacency matrix
@@ -317,7 +321,7 @@ class HANLayer(nn.Module):
         for i in range(num_metapaths):
             self.gat_layers.append(GATConv(
                 in_dim, out_dim, layer_num_heads,
-                feat_drop, attn_drop, negative_slope, residual, activation))
+                feat_drop, attn_drop, negative_slope, residual, activation, norm))
         self.semantic_attention = SemanticAttention(in_size=out_dim * layer_num_heads)  # macro
 
     def forward(self, gs, h):
@@ -376,47 +380,47 @@ class HAN(nn.Module):
                  attn_drop,
                  negative_slope,
                  residual,
-                 norm,
                  concat_out=False,
                  encoding=False
                  ):
         super(HAN, self).__init__()
-        self.num_metapaths=num_metapaths
+        self.num_metapaths = num_metapaths
         self.out_dim = out_dim
         self.num_heads = num_heads
         self.num_layers = num_layers
         self.han_layers = nn.ModuleList()
-        self.concat_out = concat_out
+        # self.concat_out = concat_out
 
-        self.activation=nn.PReLU()
+        self.activation = nn.PReLU()
         last_activation = nn.PReLU() if encoding else None
 
         last_residual = (encoding and residual)
-        last_norm = norm if encoding else None
+        norm = nn.BatchNorm1d
+        last_norm = nn.BatchNorm1d if encoding else None
 
         if num_layers == 1:
             self.han_layers.append(HANLayer(num_metapaths,
                                             in_dim, out_dim, num_out_heads,
                                             feat_drop, attn_drop, negative_slope, last_residual, last_activation,
-                                            norm=last_norm, concat_out=concat_out))
+                                            norm=last_norm))
         else:
             # input projection (no residual)
             self.han_layers.append(HANLayer(num_metapaths,
                                             in_dim, hidden_dim, num_heads,
-                                            feat_drop, attn_drop, negative_slope, residual, self.activation, norm=norm,
-                                            concat_out=concat_out))
+                                            feat_drop, attn_drop, negative_slope, residual, self.activation,
+                                            norm=norm))
             # hidden layers
             for l in range(1, num_layers - 1):
                 # due to multi-head, the in_dim = hidden_dim * num_heads
                 self.han_layers.append(HANLayer(num_metapaths,
                                                 hidden_dim * num_heads, hidden_dim, num_heads,
                                                 feat_drop, attn_drop, negative_slope, residual, self.activation,
-                                                norm=norm, concat_out=concat_out))
+                                                norm=norm))
             # output projection
             self.han_layers.append(HANLayer(num_metapaths,
                                             hidden_dim * num_heads, out_dim, num_out_heads,
                                             feat_drop, attn_drop, negative_slope, last_residual,
-                                            activation=last_activation, norm=last_norm, concat_out=concat_out))
+                                            activation=last_activation, norm=last_norm))
 
     def forward(self, gs: list[dgl.DGLGraph], h: torch.Tensor):
         # gs is masked metapath_reachable_graph

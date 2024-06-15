@@ -8,10 +8,18 @@ import Models
 from dgl import DropEdge
 from functools import partial
 import torch.nn.functional as F
+from torch.optim import SparseAdam
+from torch.utils.data import DataLoader
+from dgl.nn.pytorch import MetaPath2Vec
+from tqdm import tqdm
+import os
+
+os.environ["DGLBACKEND"] = "pytorch"
 
 from openhgnn.sampler import random_walk_sampler
-from dgl.nn.pytorch import MetaPath2Vec
 from openhgnn.sampler.random_walk_sampler import RandomWalkSampler
+
+
 def sce_loss(x, y, gamma=3):
     x = F.normalize(x, p=2, dim=-1)
     y = F.normalize(y, p=2, dim=-1)
@@ -80,8 +88,9 @@ class HGMAE(BaseModel):
     '''
 
     @classmethod
-    def build_model_from_args(cls, args, metapaths_dict: dict):
+    def build_model_from_args(cls, args, hg, metapaths_dict: dict):
         return cls(
+            hg=hg,
             metapaths_dict=metapaths_dict,
             category=args.category,
             in_dim=args.in_dim,
@@ -103,29 +112,39 @@ class HGMAE(BaseModel):
             mp_edge_gamma=args.mp_edge_gamma,
 
             # Type-specific Attribute Restoration
+            node_mask_rate=args.node_mask_rate,
             attr_restore_gamma=args.attr_restore_gamma,
             attr_restore_loss_weight=args.attr_restore_loss_weight,
-            node_mask_rate=args.node_mask_rate,
             attr_replace_rate=args.attr_replace_rate,
             attr_unchanged_rate=args.attr_unchanged_rate,
 
             # Positional Feature Prediction
+            mp2vec_negative_size=args.mp2vec_negative_size,
+            mp2vec_window_size=args.mp2vec_window_size,
+
+            mp2vec_batch_size=args.mp2vec_batch_size,
+            mp2vec_train_epoch=args.mp2vec_train_epoch,
+            mp2vec_trian_lr=args.mp2vec_train_lr,
+
             mp2vec_feat_dim=args.mp2vec_feat_dim,
             mp2vec_feat_pred_loss_weight=args.mp2vec_feat_pred_loss_weight,
             mp2vec_feat_gamma=args.mp2vec_feat_gamma,
             mp2vec_feat_drop=args.mp2vec_feat_drop,
+
         )
-    def __init__(self, metapaths_dict, category,
+
+    def __init__(self, hg, metapaths_dict, category,
                  in_dim, hidden_dim, num_layers, num_heads, num_out_heads,
                  feat_drop, attn_drop, negative_slope=0.2, residual=False,
                  mp_edge_recon_loss_weight=1, mp_edge_mask_rate=0.6, mp_edge_gamma=3,
                  attr_restore_loss_weight=1, attr_restore_gamma=1, node_mask_rate='0.5,0.005,0.8',
-                 attr_replace_rate=0.3, attr_unchanged_rate=0.2,
-                 mp2vec_feat_dim=0, mp2vec_feat_drop=0.2,
-                 mp2vec_feat_pred_loss_weight=0.1, mp2vec_feat_gamma=2
+                 attr_replace_rate=0.3, attr_unchanged_rate=0.2, mp2vec_negative_size=5, mp2vec_window_size=3,
+                 mp2vec_feat_dim=0, mp2vec_feat_drop=0.2, mp2vec_train_epoch=20, mp2vec_batch_size=128,
+                 mp2vec_trian_lr=0.001, mp2vec_feat_pred_loss_weight=0.1, mp2vec_feat_gamma=2,
                  ):
-
         super(HGMAE, self).__init__()
+        # self.device = hg.device
+        # self.device = None
         self.metapaths_dict = metapaths_dict
         self.num_metapaths = len(metapaths_dict)
         self.category = category
@@ -183,8 +202,8 @@ class HGMAE(BaseModel):
             attn_drop=self.attn_drop,
             negative_slope=self.negative_slope,
             residual=self.residual,
-            norm=self.norm,
-            concat_out=self.concat_out,
+            # norm=self.norm,
+            # concat_out=self.concat_out,
             encoding=True
         )
 
@@ -201,11 +220,10 @@ class HGMAE(BaseModel):
             attn_drop=self.attn_drop,
             negative_slope=self.negative_slope,
             residual=self.residual,
-            norm=self.norm,
-            concat_out=self.concat_out,
+            # norm=self.norm,
+            # concat_out=self.concat_out,
             encoding=False
         )
-
         self.__cached_gs = None  # cached metapath reachable graphs
         self.__cached_mps = None  # cached metapath adjacency matrices (SparseMatrix)
 
@@ -230,12 +248,14 @@ class HGMAE(BaseModel):
         self.attr_replace_rate = attr_replace_rate
 
         # Positional Feature Prediction
-        # assert (use_mp2vec_feat_pred and mp2vec_feat_dim > 0) or not use_mp2vec_feat_pred, \
-        #     "When using use_mp2vec_feat_pred, mp2vec_feat_dim should be an integer greater than zero, " \
-        #     "otherwise use_mp2vec_feat_pred should be set to False."
-        # self.use_mp2vec_feat_pred = use_mp2vec_feat_pred
         self.mp2vec_feat_dim = mp2vec_feat_dim
+        self.mp2vec_window_size = mp2vec_window_size
+        self.mp2vec_negative_size = mp2vec_negative_size
+        self.mp2vec_batch_size = mp2vec_batch_size
+        self.mp2vec_train_lr = mp2vec_trian_lr
+        self.mp2vec_train_epoch = mp2vec_train_epoch
 
+        self.mp2vec_feat = None
         self.mp2vec_feat_pred_loss_weight = mp2vec_feat_pred_loss_weight
         self.mp2vec_feat_drop = mp2vec_feat_drop
         self.mp2vec_feat_gamma = mp2vec_feat_gamma
@@ -251,7 +271,57 @@ class HGMAE(BaseModel):
             nn.Linear(self.mp2vec_feat_dim, self.mp2vec_feat_dim)
         )
 
-    # dynamic/fixed mask rate
+    def train_mp2vec(
+            self,
+            hg,
+            # category,
+            # metapaths_dict,
+            # mp2vec_feat_dim,
+            # mp2vec_window_size,
+            # mp2vec_negative_size,
+            # mp2vec_train_lr,
+            # mp2vec_train_epoch,
+            # mp2vec_batch_size,
+    ):
+        device = hg.device
+        num_nodes = hg.num_nodes(self.category)
+        # embs = []
+        embs = torch.zeros(num_nodes, self.mp2vec_feat_dim).to(device)
+        # for each metapath
+        for mp_name, mp in self.metapaths_dict.items():
+            print("Metapath:", mp_name)
+            m2v_model = MetaPath2Vec(
+                hg, mp, self.mp2vec_window_size, self.mp2vec_feat_dim, self.mp2vec_negative_size
+            ).to(device)
+            m2v_model.train()
+            dataloader = DataLoader(
+                torch.arange(num_nodes),
+                batch_size=self.mp2vec_batch_size,
+                shuffle=True,
+                collate_fn=m2v_model.sample,
+            )
+            optimizer = SparseAdam(m2v_model.parameters(), lr=self.mp2vec_train_lr)
+            for _ in tqdm(range(self.mp2vec_train_epoch)):
+                for pos_u, pos_v, neg_v in dataloader:
+                    loss = m2v_model(pos_u.to(device), pos_v.to(device), neg_v.to(device))
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+
+            # get the embeddings
+            nids = torch.LongTensor(m2v_model.local_to_global_nid[self.category]).to(device)
+            emb = m2v_model.node_embed(nids)
+            # embs.append(emb)
+            embs += emb
+
+        del m2v_model, nids, pos_u, pos_v, neg_v
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+        # concat/avg these emb of each metapath
+        return embs / self.num_metapaths
+        # return torch.concat(embs, dim=1).detach() x
+
     def get_mask_rate(self, input_mask_rate, get_min=False, epoch=None):
         try:
             return float(input_mask_rate)
@@ -276,15 +346,17 @@ class HGMAE(BaseModel):
                     "input_mask_rate should be a float number (0-1), or in the format of 'min,delta,max', '0.6,-0.1,0.4', "
                     "for example")
 
-    # mps: a list of metapath-based adjacency matrices (SparseMatrix)
+        # mps: a list of metapath-based adjacency matrices (SparseMatrix)
+
     def get_mps(self, hg: dgl.DGLHeteroGraph):
         if self.__cached_mps is None:
             self.__cached_mps = [dgl.metapath_reachable_graph(hg, mp).adjacency_matrix() for mp in
                                  self.metapaths_dict.values()]
         return self.__cached_mps
 
-    # gs: a list of meta path reachable graphs that only contain topological structures
-    # without edge and node features
+        # gs: a list of meta path reachable graphs that only contain topological structures
+        # without edge and node features
+
     def mps_to_gs(self, mps):
         if self.__cached_gs is None:
             gs = []
@@ -309,10 +381,9 @@ class HGMAE(BaseModel):
         emb_mapped = self.encoder_to_decoder_edge_recon(enc_emb)
 
         feat_recon, att_mp = self.decoder(masked_gs, emb_mapped)
-
         gs_recon = torch.mm(feat_recon, feat_recon.T)
-        # ???????????????
-        # 为什么都是同一个gs_recon
+
+        # ??????为什么都是同一个gs_recon
         loss = att_mp[0] * self.mp_edge_recon_loss(gs_recon, mps[0].to_dense())
         if len(mps) > 1:
             for i in range(len(mps)):
@@ -374,34 +445,38 @@ class HGMAE(BaseModel):
         loss = self.attr_restore_loss(feat_before_mask, feat_after_mask)
         return loss, enc_emb
 
-
-    def forward(self, hg: dgl.DGLHeteroGraph, h_dict, mp2vec_feat_dict=None, epoch=None):
-
+    def forward(self, hg: dgl.heterograph, h_dict, mp2vec_feat_dict=None, epoch=None):
         assert epoch is not None, "epoch should be a positive integer"
-        # assert (mp2vec_feat_dict is not None and self.use_mp2vec_feat_pred) or \
-        #        (mp2vec_feat_dict is None and not self.use_mp2vec_feat_pred), \
-        #     "When using use_mp2vec_feat_pred, mp2vec_feat_dict[self.category].shape[1] should be equal to self.mp2vec_feat_dim, " \
-        #     "otherwise use_mp2vec_feat_pred should be set to False."
+        # if self.device is None:
+        #     self.device = hg.device
 
-        feat = h_dict[self.category]
+        if mp2vec_feat_dict is None:
+            if self.mp2vec_feat is None:
+                print("Training MetaPath2Vec feat by given metapaths_dict ")
+                self.mp2vec_feat = self.train_mp2vec(hg)
+            mp2vec_feat = self.mp2vec_feat
+        else:
+            mp2vec_feat = mp2vec_feat_dict[self.category]
+
+        feat = h_dict[self.category].to(hg.device)
         mps = self.get_mps(hg)
         gs = self.mps_to_gs(mps)
 
+        # MER
         mp_edge_recon_loss = self.mp_edge_recon_loss_weight * self.mask_mp_edge_reconstruction(mps, feat, epoch)
         print(mp_edge_recon_loss.detach())
 
+        # TAR
         attr_restore_loss, enc_emb = self.mask_attr_restoration(gs, feat, epoch)
         attr_restore_loss *= self.attr_restore_loss_weight
         print(attr_restore_loss.detach())
 
         loss = mp_edge_recon_loss + attr_restore_loss
 
-        if mp2vec_feat_dict is not None:
-            mp2vec_feat = mp2vec_feat_dict[self.category]
-            mp2vec_feat_pred = self.enc_out_to_mp2vec_feat_mapping(enc_emb)
-            mp2vec_feat_pred_loss = self.mp2vec_feat_pred_loss(mp2vec_feat_pred, mp2vec_feat)
-            print(mp2vec_feat_pred_loss.detach())
-            loss+=self.mp2vec_feat_pred_loss_weight*mp2vec_feat_pred_loss
-
+        # PFP
+        mp2vec_feat_pred = self.enc_out_to_mp2vec_feat_mapping(enc_emb)
+        mp2vec_feat_pred_loss = self.mp2vec_feat_pred_loss(mp2vec_feat_pred, mp2vec_feat)
+        print(mp2vec_feat_pred_loss.detach())
+        loss += self.mp2vec_feat_pred_loss_weight * mp2vec_feat_pred_loss
 
         return loss

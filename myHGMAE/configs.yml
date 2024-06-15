@@ -1,46 +1,16 @@
 # --------------------- acm ---------------------
 acm:
-  category: paper
-  activation: prelu
-  attr_restore_gamma: 1
-  attr_restore_loss_weight: 1
   dataset: acm
-  decoder: han
-  encoder: han
-  eva_lr: 0.01
-  eva_wd: 0.0005
-  feat_drop: 0.2
-  attn_drop: 0.5
-  node_mask_rate: 0.5,0.005,0.8
-  attr_unchanged_rate: 0.3
-  attr_replace_rate: 0.2
-  gpu: 0
+
   in_dim: 1902
   hidden_dim: 256
-  l2_coef: 0
-  loss_func: sce
-  lr: 0.0008
-  mae_epochs: 3
-  mask_rate: 0.4
-  mp2vec_feat_dim: 128
-  mp2vec_feat_gamma: 2
-  mp2vec_feat_drop: 0.2
-  mp2vec_feat_pred_loss_weight: 0.1
-  mp_edge_gamma: 3
-  mp_edge_mask_rate: 0.7
-  mp_edge_recon_loss_weight: 1
+  category: paper
+  activation: prelu
+  feat_drop: 0.2
+  attn_drop: 0.5
 
-  mps_batch_size: 256
-  mps_context_size: 3
-  mps_epoch: 1
-  mps_lr: 0.001
-  mps_num_negative_samples: 3
-  mps_walk_length: 10
-  mps_walks_per_node: 3
-
-
-  n_labels: 3
   negative_slope: 0.2
+  n_labels: 3
   nei_num: 2
   norm: batchnorm
   num_heads: 4
@@ -49,5 +19,43 @@ acm:
   optimizer: adam
   patience: 10
   residual: false
+
+
+  mp_edge_recon_loss_weight: 1
+  mp_edge_mask_rate: 0.7
+  mp_edge_gamma: 3
+
+  node_mask_rate: 0.5,0.005,0.8
+  attr_restore_loss_weight: 1
+  attr_restore_gamma: 1
+  attr_replace_rate: 0.2
+  attr_unchanged_rate: 0.3
+
+  mp2vec_negative_size: 5
+  mp2vec_window_size: 3
+  mp2vec_batch_size: 128
+  mp2vec_train_epoch: 20
+  mp2vec_train_lr: 0.001
+  mp2vec_feat_dim: 128
+  mp2vec_feat_pred_loss_weight: 0.1
+  mp2vec_feat_gamma: 2
+  mp2vec_feat_drop: 0.2
+
+
+
+  gpu: 0
+
+  eva_lr: 0.01
+  eva_wd: 0.0005
+
   scheduler: true
   scheduler_gamma: 0.999
+
+  l2_coef: 0
+  lr: 0.0008
+
+  mps_walk_length: 10
+  mps_walks_per_node: 3
+  mae_epochs: 3
+
+

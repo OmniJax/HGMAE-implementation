@@ -1,6 +1,4 @@
-
-
-- [ ] dgl跑m2v
+- [x] dgl跑m2v
 
 - [ ] 植入到HGMAE
 
