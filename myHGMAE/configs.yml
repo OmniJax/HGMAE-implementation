@@ -3,12 +3,10 @@ acm:
   dataset: acm
 
   in_dim: 1902
-  hidden_dim: 256
+  hidden_dim: 1024
   category: paper
-  activation: prelu
   feat_drop: 0.2
   attn_drop: 0.5
-
   negative_slope: 0.2
   n_labels: 3
   nei_num: 2
@@ -16,13 +14,12 @@ acm:
   num_heads: 4
   num_layers: 2
   num_out_heads: 1
-  optimizer: adam
-  patience: 10
+
   residual: false
 
 
   mp_edge_recon_loss_weight: 1
-  mp_edge_mask_rate: 0.7
+  mp_edge_mask_rate: 0.6
   mp_edge_gamma: 3
 
   node_mask_rate: 0.5,0.005,0.8
@@ -32,19 +29,22 @@ acm:
   attr_unchanged_rate: 0.3
 
   mp2vec_negative_size: 5
-  mp2vec_window_size: 3
-  mp2vec_batch_size: 128
-  mp2vec_train_epoch: 25
-  mp2vec_train_lr: 0.001
-  mp2vec_feat_dim: 256
+  mp2vec_window_size: 5
+  mp2vec_batch_size: 256
+  mp2vec_rw_length: 10
+  mp2vec_walks_per_node: 3
+  mp2vec_train_epoch: 2
+  mp2vec_train_lr: 0.01
+  mp2vec_feat_dim: 128
   mp2vec_feat_pred_loss_weight: 0.1
-  mp2vec_feat_gamma: 2
+  mp2vec_feat_gamma: 1
   mp2vec_feat_drop: 0.2
 
 
-
+  optimizer: adam
+  patience: 10
   gpu: 0
-
+  mae_epochs: 1000
   eva_lr: 0.01
   eva_wd: 0.0005
 
@@ -53,9 +53,4 @@ acm:
 
   l2_coef: 0
   lr: 0.0008
-
-  mps_walk_length: 10
-  mps_walks_per_node: 3
-  mae_epochs: 3
-
 
