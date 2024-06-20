@@ -32,10 +32,10 @@ acm:
   mp2vec_window_size: 5
   mp2vec_batch_size: 256
   mp2vec_rw_length: 10
-  mp2vec_walks_per_node: 3
-  mp2vec_train_epoch: 2
+  mp2vec_walks_per_node: 2
+  mp2vec_train_epoch: 20
   mp2vec_train_lr: 0.01
-  mp2vec_feat_dim: 128
+  mp2vec_feat_dim: 256
   mp2vec_feat_pred_loss_weight: 0.1
   mp2vec_feat_gamma: 1
   mp2vec_feat_drop: 0.2

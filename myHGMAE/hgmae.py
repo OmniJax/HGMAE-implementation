@@ -372,7 +372,7 @@ class HGMAE(BaseModel):
         if self.__cached_mps is None:
             self.__cached_mps = []
             for mp in self.metapaths_dict.values():
-                adj = dgl.metapath_reachable_graph(hg, mp).adjacency_matrix()
+                adj = dgl.metapath_reachable_graph(hg, mp,).adjacency_matrix()
                 adj = self.normalize_adj(adj.to_dense()).to_sparse()  # torch_sparse
                 # adj = sp.from_torch_sparse(adj)
                 self.__cached_mps.append(adj)
