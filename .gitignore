@@ -6,3 +6,4 @@ openhgnn/
 __pycache__/
 .idea/
 data/
+**/*.jupyterlab-workspace
