@@ -28,7 +28,7 @@ dblp:
   mps_batch_size: 128
   mps_context_size: 5
   mps_embedding_dim: 64
-  mps_epoch: 2
+  mps_epoch: 20
   mps_lr: 0.005
   mps_num_negative_samples: 3
   mps_walk_length: 10
