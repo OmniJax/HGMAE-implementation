@@ -7,68 +7,66 @@ from dgl.ops import edge_softmax
 import dgl.function as fn
 from dgl.utils import expand_as_pair
 
-from openhgnn.trainerflow import slice_trainer
 
+class HAN(nn.Module):
+    def __init__(self,
+                 num_metapaths,
+                 in_dim,
+                 hidden_dim,
+                 out_dim,
+                 num_layers,
+                 num_heads,
+                 num_out_heads,
+                 activation,
+                 feat_drop,
+                 attn_drop,
+                 negative_slope,
+                 residual,
+                 norm,
+                 concat_out=False,
+                 encoding=False
+                 ):
+        super(HAN, self).__init__()
+        self.out_dim = out_dim
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.han_layers = nn.ModuleList()
+        self.activation = activation
+        self.concat_out = concat_out
 
-# from ~openhgnn.layers.MetapathConv import MetapathConv
-# from ~openhgnn.utils import extract_metapaths
-# from ~openhgnn.layers.macro_layer.SemanticConv import SemanticAttention
+        last_activation = activation if encoding else None
+        last_residual = (encoding and residual)
+        last_norm = norm if encoding else None
 
-#
-# class NormLayer(nn.Module):
-#     def __init__(self, hidden_dim, norm_type):
-#         super().__init__()
-#         if norm_type == "batchnorm":
-#             self.norm = nn.BatchNorm1d(hidden_dim)
-#         elif norm_type == "layernorm":
-#             self.norm = nn.LayerNorm(hidden_dim)
-#         elif norm_type == "graphnorm":
-#             self.norm = norm_type
-#             self.weight = nn.Parameter(torch.ones(hidden_dim))
-#             self.bias = nn.Parameter(torch.zeros(hidden_dim))
-#
-#             self.mean_scale = nn.Parameter(torch.ones(hidden_dim))
-#         else:
-#             raise NotImplementedError
-#
-#     def forward(self, graph, x):
-#         tensor = x
-#         if self.norm is not None and type(self.norm) != str:
-#             return self.norm(tensor)
-#         elif self.norm is None:
-#             return tensor
-#
-#         batch_list = graph.batch_num_nodes
-#         batch_size = len(batch_list)
-#         batch_list = torch.Tensor(batch_list).long().to(tensor.device)
-#         batch_index = torch.arange(batch_size).to(tensor.device).repeat_interleave(batch_list)
-#         batch_index = batch_index.view((-1,) + (1,) * (tensor.dim() - 1)).expand_as(tensor)
-#         mean = torch.zeros(batch_size, *tensor.shape[1:]).to(tensor.device)
-#         mean = mean.scatter_add_(0, batch_index, tensor)
-#         mean = (mean.T / batch_list).T
-#         mean = mean.repeat_interleave(batch_list, dim=0)
-#
-#         sub = tensor - mean * self.mean_scale
-#
-#         std = torch.zeros(batch_size, *tensor.shape[1:]).to(tensor.device)
-#         std = std.scatter_add_(0, batch_index, sub.pow(2))
-#         std = ((std.T / batch_list).T + 1e-6).sqrt()
-#         std = std.repeat_interleave(batch_list, dim=0)
-#         return self.weight * sub / std + self.bias
-#
+        if num_layers == 1:
+            self.han_layers.append(HANLayer(num_metapaths,
+                                            in_dim, out_dim, num_out_heads,
+                                            feat_drop, attn_drop, negative_slope, last_residual, last_activation,
+                                            norm=last_norm))
+        else:
+            # input projection (no residual)
+            self.han_layers.append(HANLayer(num_metapaths,
+                                            in_dim, hidden_dim, num_heads,
+                                            feat_drop, attn_drop, negative_slope, residual, self.activation,
+                                            norm=norm,
+                                            ))
+            # hidden layers
+            for l in range(1, num_layers - 1):
+                # due to multi-head, the in_dim = num_hidden * num_heads
+                self.han_layers.append(HANLayer(num_metapaths,
+                                                hidden_dim * hidden_dim, hidden_dim, num_heads,
+                                                feat_drop, attn_drop, negative_slope, residual, self.activation,
+                                                norm=norm))
+            # output projection
+            self.han_layers.append(HANLayer(num_metapaths,
+                                            hidden_dim * num_heads, out_dim, num_out_heads,
+                                            feat_drop, attn_drop, negative_slope, last_residual,
+                                            activation=last_activation, norm=last_norm))
 
-#
-# def create_norm(name):
-#     if name == "layernorm":
-#         return nn.LayerNorm
-#     elif name == "batchnorm":
-#         return nn.BatchNorm1d
-#     elif name == "graphnorm":
-#         return partial(NormLayer, norm_type="groupnorm")
-#     elif name == 'none':
-#         return None
-#     else:
-#         return None
+    def forward(self, gs: List[dgl.DGLGraph], h, return_hidden=False):
+        for gnn in self.han_layers:
+            h, att_mp = gnn(gs, h)
+        return h, att_mp
 
 
 class SemanticAttention(nn.Module):
@@ -83,15 +81,39 @@ class SemanticAttention(nn.Module):
 
     def forward(self, z):
         w = self.project(z).mean(0)  # (M, 1)
-        beta = torch.softmax(w, dim=0)  # (M, 1) beta : att_mp
+        beta = torch.softmax(w, dim=0)  # (M, 1)
         beta = beta.expand((z.shape[0],) + beta.shape)  # (N, M, 1)
         out_emb = (beta * z).sum(1)  # (N, D * K)
         att_mp = beta.mean(0).squeeze()
-        # out_emb:
+
         return out_emb, att_mp
 
 
-class GATConv(nn.Module):
+class HANLayer(nn.Module):
+    def __init__(self, num_metapaths, in_dim, out_dim, num_heads,
+                 feat_drop, attn_drop, negative_slope, residual, activation, norm):
+        super(HANLayer, self).__init__()
+
+        # One GAT layer for each meta path based adjacency matrix
+        self.gat_layers = nn.ModuleList()
+        for i in range(num_metapaths):
+            self.gat_layers.append(GATConv_norm(
+                in_dim, out_dim, num_heads,
+                feat_drop, attn_drop, negative_slope, residual, activation, norm=norm))
+        self.semantic_attention = SemanticAttention(in_size=out_dim * num_heads)
+
+    def forward(self, gs, h):
+        semantic_embeddings = []
+
+        for i, new_g in enumerate(gs):
+            semantic_embeddings.append(self.gat_layers[i](new_g, h).flatten(1))  # flatten because of att heads
+        semantic_embeddings = torch.stack(semantic_embeddings, dim=1)  # (N, M, D * K)
+        out, att_mp = self.semantic_attention(semantic_embeddings)  # (N, D * K)
+
+        return out, att_mp
+
+
+class GATConv_norm(nn.Module):
     def __init__(self,
                  in_feats,
                  out_feats,
@@ -103,9 +125,8 @@ class GATConv(nn.Module):
                  activation=None,
                  allow_zero_in_degree=False,
                  bias=True,
-                 norm=None
-                 ):
-        super(GATConv, self).__init__()
+                 norm=None):
+        super(GATConv_norm, self).__init__()
         self._num_heads = num_heads
         self._in_src_feats, self._in_dst_feats = expand_as_pair(in_feats)
         self._out_feats = out_feats
@@ -139,8 +160,6 @@ class GATConv(nn.Module):
         self.reset_parameters()
         self.activation = activation
 
-        # self.concat_out = concat_out  # 改动：相比于dgl，新增，默认concat_out
-        # self.norm=nn.BatchNorm1d(num_heads*out_feats)
         self.norm = norm
         if norm is not None:
             self.norm = norm(num_heads * out_feats)
@@ -169,27 +188,13 @@ class GATConv(nn.Module):
             nn.init.constant_(self.bias, 0)
         if isinstance(self.res_fc, nn.Linear):
             nn.init.xavier_normal_(self.res_fc.weight, gain=gain)
-            # 改动：相比于dgl，删了
-            # if self.res_fc.bias is not None:
-            #     nn.init.constant_(self.res_fc.bias, 0)
 
     def set_allow_zero_in_degree(self, set_value):
-        r"""
-        Description
-        -----------
-        Set allow_zero_in_degree flag.
-
-        Parameters
-        ----------
-        set_value : bool
-          The value to be set to the flag.
-        """
         self._allow_zero_in_degree = set_value
 
     def forward(self, graph, feat, get_attention=False):
         """
             feat: Tensor of shape [num_nodes,feat_dim]
-            改：相比于dgl，没有edge_weight
         """
         with graph.local_scope():
             if not self._allow_zero_in_degree:
@@ -249,7 +254,6 @@ class GATConv(nn.Module):
             # e = graph.edata.pop('e')
             # compute softmax
             graph.edata['a'] = self.attn_drop(edge_softmax(graph, e))
-            # 改：没有edge_weight
             # message passing
             graph.update_all(fn.u_mul_e('ft', 'a', 'm'),
                              fn.sum('m', 'ft'))
@@ -266,15 +270,9 @@ class GATConv(nn.Module):
                 resval = self.res_fc(h_dst).view(*dst_prefix_shape, -1, self._out_feats)
                 rst = rst + resval
 
-            # 改：增加了concat_out，可外提
-            # 默认flatten，concat_out
-            # if self.concat_out:
             rst = rst.flatten(1)
-            # else:
-            #     rst = torch.mean(rst, dim=1)
 
-            # 改：增加了norm，可外提
-            # 默认batchnorm
+            # batchnorm
             if self.norm is not None:
                 rst = self.norm(rst)
 
@@ -286,149 +284,3 @@ class GATConv(nn.Module):
                 return rst, graph.edata['a']
             else:
                 return rst
-
-
-class HANLayer(nn.Module):
-    """
-    HAN layer.
-
-    Arguments
-    ---------
-    meta_paths : int
-        Number of metapaths
-    in_dim : int
-        input feature dimension
-    out_dim : int
-        output feature dimension
-    layer_num_heads : number of attention heads (each GATConv)
-    dropout : Dropout probability
-
-    Inputs
-    ------
-    g : DGLHeteroGraph
-        The heterogeneous graph
-    h : tensor
-        Input features
-
-    Outputs
-    -------
-    tensor
-        The output feature
-    """
-
-    def __init__(self, num_metapaths, in_dim, out_dim, layer_num_heads,
-                 feat_drop, attn_drop, negative_slope, residual, activation, norm):
-        super(HANLayer, self).__init__()
-
-        # One GAT layer for each meta path based adjacency matrix
-        self.gat_layers = nn.ModuleList()  # openhgnn里用的是nn.ModuleDict
-        for i in range(num_metapaths):
-            self.gat_layers.append(GATConv(
-                in_dim, out_dim, layer_num_heads,
-                feat_drop, attn_drop, negative_slope, residual, activation, norm))
-        self.semantic_attention = SemanticAttention(in_size=out_dim * layer_num_heads)  # macro
-
-    def forward(self, gs, h):
-        semantic_embeddings = []
-        for i, new_g in enumerate(gs):
-            semantic_embeddings.append(self.gat_layers[i](new_g, h).flatten(1))  # flatten because of att heads
-        semantic_embeddings = torch.stack(semantic_embeddings, dim=1)  # (N, M, D * K)
-        out, att_mp = self.semantic_attention(semantic_embeddings)  # (N, D * K)
-
-        return out, att_mp
-
-
-class HAN(nn.Module):
-    '''
-    HAN : contains several HANLayers
-        when num_layers=1, layer(in_dim,out_dim,num_out_heads)
-        when num_layers>1:
-            layer_1(in_dim,hidden_dim,num_heads),
-            layer_2(hidden_dim*num_heads,hidden_dim,num_heads)
-            ...
-            layers_n(hidden_dim*num_heads,out_dim,num_out_heads)
-
-    HANLayers : contains several GATConv(in_dim,out_dim), the number of GATLayers is up to num_metapaths
-
-    Parameters
-    ------------
-    num_metapaths : int
-        Number of metapaths.
-    in_dim : int
-        Input feature dimension.
-    hidden_dim : int
-        Hidden layer dimension.
-    out_dim : int
-        Output feature dimension.
-    num_heads : int
-        Number of attentions heads (Multiple HANLayers all use the same num_heads)
-    num_out_heads : int
-        Number of attentions heads of output projection
-    dropout : float
-        Dropout probability.
-    encoding : bool
-        True means encoder, False means decoder
-    """
-
-    '''
-
-    def __init__(self,
-                 num_metapaths,
-                 in_dim,
-                 hidden_dim,
-                 out_dim,
-                 num_layers,
-                 num_heads,
-                 num_out_heads,
-                 feat_drop,
-                 attn_drop,
-                 negative_slope,
-                 residual,
-                 concat_out=False,
-                 encoding=False
-                 ):
-        super(HAN, self).__init__()
-        self.num_metapaths = num_metapaths
-        self.out_dim = out_dim
-        self.num_heads = num_heads
-        self.num_layers = num_layers
-        self.han_layers = nn.ModuleList()
-        # self.concat_out = concat_out
-
-        self.activation = nn.PReLU()
-        last_activation = nn.PReLU() if encoding else None
-
-        last_residual = (encoding and residual)
-        norm = nn.BatchNorm1d
-        last_norm = nn.BatchNorm1d if encoding else None
-
-        if num_layers == 1:
-            self.han_layers.append(HANLayer(num_metapaths,
-                                            in_dim, out_dim, num_out_heads,
-                                            feat_drop, attn_drop, negative_slope, last_residual, last_activation,
-                                            norm=last_norm))
-        else:
-            # input projection (no residual)
-            self.han_layers.append(HANLayer(num_metapaths,
-                                            in_dim, hidden_dim, num_heads,
-                                            feat_drop, attn_drop, negative_slope, residual, self.activation,
-                                            norm=norm))
-            # hidden layers
-            for l in range(1, num_layers - 1):
-                # due to multi-head, the in_dim = hidden_dim * num_heads
-                self.han_layers.append(HANLayer(num_metapaths,
-                                                hidden_dim * num_heads, hidden_dim, num_heads,
-                                                feat_drop, attn_drop, negative_slope, residual, self.activation,
-                                                norm=norm))
-            # output projection
-            self.han_layers.append(HANLayer(num_metapaths,
-                                            hidden_dim * num_heads, out_dim, num_out_heads,
-                                            feat_drop, attn_drop, negative_slope, last_residual,
-                                            activation=last_activation, norm=last_norm))
-
-    def forward(self, gs: list[dgl.DGLGraph], h: torch.Tensor):
-        # gs is masked metapath_reachable_graph
-        for han_layer in self.han_layers:
-            h, att_mp = han_layer(gs, h)
-        return h, att_mp
-        # 用openhgnn实现时， att_mp或许可以通过HAN.mod_dict[].get_emb
