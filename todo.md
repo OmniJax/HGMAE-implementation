@@ -26,9 +26,9 @@ def normalize_adj(adj):
     d_inv_sqrt=torch.where(torch.isinf(d_inv_sqrt),0.,d_inv_sqrt)
 ```
 
-- [ ] 论文中的acm数据，你看看能不能把它处理成dglgraph形式。然后再用dgl读取元路径的方式读出元路径的邻接矩阵
+- [x] 论文中的acm数据，你看看能不能把它处理成dglgraph形式。然后再用dgl读取元路径的方式读出元路径的邻接矩阵
 
-- [ ] 如果都不信的话，那dglgraph这个对象有一个edata成员，这里面可以存储一些元路径矩阵之类的信息。
+- [x] 如果都不信的话，那dglgraph这个对象有一个edata成员，这里面可以存储一些元路径矩阵之类的信息。
 
 
 

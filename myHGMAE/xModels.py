@@ -1,11 +1,77 @@
-from typing import List
+# from typing import List
 import torch
 import torch.nn as nn
-from functools import partial
 import dgl
 from dgl.ops import edge_softmax
 import dgl.function as fn
 from dgl.utils import expand_as_pair
+
+
+class SemanticAttention(nn.Module):
+    def __init__(self, in_size, hidden_size=128):
+        super(SemanticAttention, self).__init__()
+
+        self.project = nn.Sequential(
+            nn.Linear(in_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 1, bias=False)
+        )
+
+    def forward(self, z):
+        w = self.project(z).mean(0)  # (M, 1)
+        beta = torch.softmax(w, dim=0)  # (M, 1)
+        beta = beta.expand((z.shape[0],) + beta.shape)  # (N, M, 1)
+        out_emb = (beta * z).sum(1)  # (N, D * K)
+        att_mp = beta.mean(0).squeeze()
+
+        return out_emb, att_mp
+
+
+class HANLayer(nn.Module):
+    """
+    HAN layer.
+
+    Arguments
+    ---------
+    meta_paths : list of metapaths, each as a list of edge types
+    in_size : input feature dimension
+    out_size : output feature dimension
+    layer_num_heads : number of attention heads
+    dropout : Dropout probability
+
+    Inputs
+    ------
+    g : DGLHeteroGraph
+        The heterogeneous graph
+    h : tensor
+        Input features
+
+    Outputs
+    -------
+    tensor
+        The output feature
+    """
+
+    def __init__(self, num_metapaths, in_dim, out_dim, num_heads,
+                 feat_drop, attn_drop, negative_slope, residual, activation, norm, concat_out):
+        super(HANLayer, self).__init__()
+
+        # One GAT layer for each meta path based adjacency matrix
+        self.gat_layers = nn.ModuleList()
+        for i in range(num_metapaths):
+            self.gat_layers.append(GATConv(
+                in_dim, out_dim, num_heads,
+                feat_drop, attn_drop, negative_slope, residual, activation, norm=norm, concat_out=concat_out))
+        self.semantic_attention = SemanticAttention(in_size=out_dim * num_heads)
+
+    def forward(self, gs, h):
+        semantic_embeddings = []
+        for i, new_g in enumerate(gs):
+            semantic_embeddings.append(self.gat_layers[i](new_g, h).flatten(1))  # flatten because of att heads
+        semantic_embeddings = torch.stack(semantic_embeddings, dim=1)  # (N, M, D * K)
+        out, att_mp = self.semantic_attention(semantic_embeddings)  # (N, D * K)
+
+        return out, att_mp
 
 
 class HAN(nn.Module):
@@ -34,7 +100,7 @@ class HAN(nn.Module):
         self.activation = activation
         self.concat_out = concat_out
 
-        last_activation = activation if encoding else None
+        last_activation = self.activation if encoding else None
         last_residual = (encoding and residual)
         last_norm = norm if encoding else None
 
@@ -42,78 +108,33 @@ class HAN(nn.Module):
             self.han_layers.append(HANLayer(num_metapaths,
                                             in_dim, out_dim, num_out_heads,
                                             feat_drop, attn_drop, negative_slope, last_residual, last_activation,
-                                            norm=last_norm))
+                                            norm=last_norm, concat_out=concat_out))
         else:
             # input projection (no residual)
             self.han_layers.append(HANLayer(num_metapaths,
                                             in_dim, hidden_dim, num_heads,
-                                            feat_drop, attn_drop, negative_slope, residual, self.activation,
-                                            norm=norm,
-                                            ))
+                                            feat_drop, attn_drop, negative_slope, residual, self.activation, norm=norm,
+                                            concat_out=concat_out))
             # hidden layers
             for l in range(1, num_layers - 1):
                 # due to multi-head, the in_dim = num_hidden * num_heads
                 self.han_layers.append(HANLayer(num_metapaths,
-                                                hidden_dim * hidden_dim, hidden_dim, num_heads,
+                                                hidden_dim * num_heads, hidden_dim, num_heads,
                                                 feat_drop, attn_drop, negative_slope, residual, self.activation,
-                                                norm=norm))
+                                                norm=norm, concat_out=concat_out))
             # output projection
             self.han_layers.append(HANLayer(num_metapaths,
                                             hidden_dim * num_heads, out_dim, num_out_heads,
                                             feat_drop, attn_drop, negative_slope, last_residual,
-                                            activation=last_activation, norm=last_norm))
+                                            activation=last_activation, norm=last_norm, concat_out=concat_out))
 
-    def forward(self, gs: List[dgl.DGLGraph], h, return_hidden=False):
+    def forward(self, gs: list[dgl.DGLGraph], h, return_hidden=False):
         for gnn in self.han_layers:
             h, att_mp = gnn(gs, h)
         return h, att_mp
 
 
-class SemanticAttention(nn.Module):
-    def __init__(self, in_size, hidden_size=128):
-        super(SemanticAttention, self).__init__()
-
-        self.project = nn.Sequential(
-            nn.Linear(in_size, hidden_size),
-            nn.Tanh(),
-            nn.Linear(hidden_size, 1, bias=False)
-        )
-
-    def forward(self, z):
-        w = self.project(z).mean(0)  # (M, 1)
-        beta = torch.softmax(w, dim=0)  # (M, 1)
-        beta = beta.expand((z.shape[0],) + beta.shape)  # (N, M, 1)
-        out_emb = (beta * z).sum(1)  # (N, D * K)
-        att_mp = beta.mean(0).squeeze()
-
-        return out_emb, att_mp
-
-
-class HANLayer(nn.Module):
-    def __init__(self, num_metapaths, in_dim, out_dim, num_heads,
-                 feat_drop, attn_drop, negative_slope, residual, activation, norm):
-        super(HANLayer, self).__init__()
-
-        # One GAT layer for each meta path based adjacency matrix
-        self.gat_layers = nn.ModuleList()
-        for i in range(num_metapaths):
-            self.gat_layers.append(GATConv_norm(
-                in_dim, out_dim, num_heads,
-                feat_drop, attn_drop, negative_slope, residual, activation, norm=norm))
-        self.semantic_attention = SemanticAttention(in_size=out_dim * num_heads)
-
-    def forward(self, gs, h):
-        semantic_embeddings = []
-
-        for i, new_g in enumerate(gs):
-            semantic_embeddings.append(self.gat_layers[i](new_g, h).flatten(1))  # flatten because of att heads
-        semantic_embeddings = torch.stack(semantic_embeddings, dim=1)  # (N, M, D * K)
-        out, att_mp = self.semantic_attention(semantic_embeddings)  # (N, D * K)
-
-        return out, att_mp
-
-
-class GATConv_norm(nn.Module):
+class GATConv(nn.Module):
     def __init__(self,
                  in_feats,
                  out_feats,
@@ -125,12 +146,14 @@ class GATConv_norm(nn.Module):
                  activation=None,
                  allow_zero_in_degree=False,
                  bias=True,
-                 norm=None):
-        super(GATConv_norm, self).__init__()
+                 norm=None,
+                 concat_out=True):
+        super(GATConv, self).__init__()
         self._num_heads = num_heads
         self._in_src_feats, self._in_dst_feats = expand_as_pair(in_feats)
         self._out_feats = out_feats
         self._allow_zero_in_degree = allow_zero_in_degree
+        self._concat_out = concat_out
 
         if isinstance(in_feats, tuple):
             self.fc_src = nn.Linear(
@@ -159,6 +182,10 @@ class GATConv_norm(nn.Module):
             self.register_buffer('res_fc', None)
         self.reset_parameters()
         self.activation = activation
+        # if norm is not None:
+        #     self.norm = norm(num_heads * out_feats)
+        # else:
+        #     self.norm = None
 
         self.norm = norm
         if norm is not None:
@@ -270,9 +297,11 @@ class GATConv_norm(nn.Module):
                 resval = self.res_fc(h_dst).view(*dst_prefix_shape, -1, self._out_feats)
                 rst = rst + resval
 
-            rst = rst.flatten(1)
+            if self._concat_out:
+                rst = rst.flatten(1)
+            else:
+                rst = torch.mean(rst, dim=1)
 
-            # batchnorm
             if self.norm is not None:
                 rst = self.norm(rst)
 

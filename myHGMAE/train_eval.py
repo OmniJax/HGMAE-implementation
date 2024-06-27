@@ -10,6 +10,7 @@ from sklearn.metrics import f1_score
 from torch.nn.functional import softmax
 from sklearn.metrics import roc_auc_score
 import numpy as np
+import random
 
 
 def load_best_configs(args, path):
@@ -31,30 +32,34 @@ def load_best_configs(args, path):
     return args
 
 
+def set_random_seed(seed):
+    dgl.seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.determinstic = True
+
+
 def evaluate(embeds, hg, args, ratio, isTest=True):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     hid_units = embeds.shape[1]
     xent = nn.CrossEntropyLoss()
 
-    label = hg.ndata["label"]["paper"].to(device)
-    idx_train = hg.ndata["train_%d" % ratio]["paper"].bool()
-    idx_val = hg.ndata["val_%d" % ratio]["paper"].bool()
-    idx_test = hg.ndata["test_%d" % ratio]["paper"].bool()
-
-    # idx_train = hg.ndata["train_mask"]["paper"].bool()
-    # idx_val = hg.ndata["valid_mask"  ]["paper"].bool()
-    # idx_test = hg.ndata["test_mask"  ]["paper"].bool()
-
-
+    label = hg.ndata["label"][args.category].to(device)
+    idx_train = hg.ndata["train_%d" % ratio][args.category].bool()
+    idx_val = hg.ndata["val_%d" % ratio][args.category].bool()
+    idx_test = hg.ndata["test_%d" % ratio][args.category].bool()
 
     train_embs = embeds[idx_train]
     val_embs = embeds[idx_val]
     test_embs = embeds[idx_test]
 
     train_lbls = label[idx_train]
-    val_lbls =   label[idx_val]
-    test_lbls =  label[idx_test]
+    val_lbls = label[idx_val]
+    test_lbls = label[idx_test]
 
     accs = []
     micro_f1s = []
@@ -62,7 +67,7 @@ def evaluate(embeds, hg, args, ratio, isTest=True):
     macro_f1s_val = []
     auc_score_list = []
 
-    for _ in range(3):
+    for _ in range(1):
         log = LogReg(hid_units, args.num_classes)
         opt = torch.optim.Adam(log.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
         log.to(device)
@@ -75,7 +80,7 @@ def evaluate(embeds, hg, args, ratio, isTest=True):
         test_macro_f1s = []
 
         logits_list = []
-        for iter_ in range(250):
+        for iter_ in range(200):
             # train
             log.train()
             opt.zero_grad()
@@ -113,7 +118,6 @@ def evaluate(embeds, hg, args, ratio, isTest=True):
 
         max_iter = val_accs.index(max(val_accs))
         accs.append(test_accs[max_iter])
-
         max_iter = val_macro_f1s.index(max(val_macro_f1s))
         macro_f1s.append(test_macro_f1s[max_iter])
         macro_f1s_val.append(val_macro_f1s[max_iter])
@@ -145,7 +149,7 @@ def evaluate(embeds, hg, args, ratio, isTest=True):
         return np.mean(macro_f1s_val), np.mean(macro_f1s)
 
 
-def train(model, hg, h_dict,trained_mp2vec_feat_dict, args):
+def train(model, hg, h_dict, trained_mp2vec_feat_dict, args):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.mae_lr, weight_decay=args.l2_coef)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.scheduler_gamma)
     best_model_state_dict = None
@@ -182,7 +186,6 @@ def train(model, hg, h_dict,trained_mp2vec_feat_dict, args):
 from hgmae import HGMAE
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser(description="HGMAE")
     parser.add_argument("--dataset", type=str, default="acm")
     args, _ = parser.parse_known_args()
@@ -195,31 +198,27 @@ if __name__ == "__main__":
             ("subject", "subject-paper", "paper"),
         ],
     }
-    #
-    # from openhgnn.dataset.NodeClassificationDataset import OHGB_NodeClassification,HGB_NodeClassification
-    # # dataset = OHGB_NodeClassification("ohgbn-acm", raw_dir="./dataset", logger=None)
-    # dataset = HGB_NodeClassification("HGBn-DBLP", raw_dir="./dataset", logger=None)
+    (hg,), _ = dgl.load_graphs('data/acm4HGMAE.bin')
 
+    # meta_paths_dict = {
+    #     "MAM": [("M", "M-A", "A"), ("A", "A-M", "M")],
+    #     "MDM": [("M", "M-D", "D"), ("D", "D-M", "M")],
+    #     "MWM": [('M', 'M-W', 'W'), ('W', 'W-M', 'M')]
+    # }
+    # (hg,), _ = dgl.load_graphs('./data/freebase4HGMAE.bin')
 
-    # hg = dataset.g.to('cuda')
-    # meta_paths_dict = dataset.meta_paths_dict
-    # h_dict = hg.ndata["h"]
-
-    (hg,), _ = dgl.load_graphs('./data/acm4hgmae.bin')
-    hg=hg.to('cuda')
+    hg = hg.to('cuda')
     h_dict = hg.ndata["h"]
-    # trained_mp2vec_feat_dict={'paper':torch.load('./my_acm_mp2vec_feat.th')}
+    # trained_mp2vec_feat_dict = torch.load('./my_freebase_mp2vec_feat.th')
+    trained_mp2vec_feat_dict = None
 
-    trained_mp2vec_feat_dict=None
     model = HGMAE.build_model_from_args(args, hg, meta_paths_dict).to("cuda")
-    embeds = train(model, hg, h_dict,trained_mp2vec_feat_dict, args)
-
+    embeds = train(model, hg, h_dict, trained_mp2vec_feat_dict, args)
 
     macro_score_list, micro_score_list, auc_score_list = [], [], []
     for ratio in [20, 40, 60]:
         macro_score, micro_score, auc_score = evaluate(embeds, hg, args, ratio)
+
         macro_score_list.append(macro_score)
         micro_score_list.append(micro_score)
         auc_score_list.append(auc_score)
-
-    pass

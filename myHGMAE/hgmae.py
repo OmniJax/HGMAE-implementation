@@ -1,40 +1,38 @@
-# 重写了HAN
+from functools import partial
 
+import dgl
+import dgl.function as fn
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from dgl import DropEdge
+from dgl.nn.pytorch import MetaPath2Vec
+from dgl.ops import edge_softmax
+from dgl.utils import expand_as_pair
 from torch.optim import SparseAdam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
-
-from openhgnn.models import BaseModel
-
-import dgl
-from dgl.ops import edge_softmax
-import dgl.function as fn
-from dgl.utils import expand_as_pair
-from dgl import DropEdge
-from functools import partial
-import torch.nn.functional as F
-from dgl.nn.pytorch import MetaPath2Vec
 from tqdm import tqdm
 
-import os
-#
-# os.environ["DGLBACKEND"] = "pytorch"
+from openhgnn import BaseModel
 
 
 def sce_loss(x, y, gamma=3):
     x = F.normalize(x, p=2, dim=-1)
     y = F.normalize(y, p=2, dim=-1)
-
     loss = (1 - (x * y).sum(dim=-1)).pow_(gamma)
-
     loss = loss.mean()
     return loss
 
 
 class HGMAE(BaseModel):
     r"""
+    **Title:** Heterogeneous Graph Masked Autoencoders
+
+    **Authors:** Yijun Tian, Kaiwen Dong, Chunhui Zhang, Chuxu Zhang, Nitesh V. Chawla
+
+    HGMAE was introduced in `[paper] <https://arxiv.org/abs/2208.09957>`_
+    and parameters are defined as follows:
 
     Parameter
     ----------
@@ -158,8 +156,6 @@ class HGMAE(BaseModel):
                  mp2vec_feat_pred_loss_weight=0.1, mp2vec_feat_gamma=2
                  ):
         super(HGMAE, self).__init__()
-        # self.device = hg.device
-        # self.device = None
         self.metapaths_dict = metapaths_dict
         self.num_metapaths = len(metapaths_dict)
         self.category = category
@@ -196,7 +192,6 @@ class HGMAE(BaseModel):
         # The parameter hidden_dim refers specifically to the embedding produced by HGMAE encoder
 
         # encoder
-        # when concat_out=True,
         # actual output dim of encoder = out_dim * num_out_heads
         #                              = enc_hidden_dim * enc_num_heads
         #                              = hidden_dim (param, that is dim of emb)
@@ -216,7 +211,6 @@ class HGMAE(BaseModel):
             residual=self.residual,
             norm=nn.BatchNorm1d,
             activation=nn.PReLU(),
-            concat_out=True,
             encoding=True
         )
 
@@ -235,7 +229,6 @@ class HGMAE(BaseModel):
             residual=self.residual,
             norm=nn.BatchNorm1d,
             activation=nn.PReLU(),
-            concat_out=True,
             encoding=False
         )
 
@@ -375,14 +368,13 @@ class HGMAE(BaseModel):
         return d_inv_sqrt * adj * d_inv_sqrt.T  # T?
 
     def get_mps(self, hg: dgl.DGLHeteroGraph):
-        # mps: a list of metapath-based adjacency matrices (SparseMatrix)
+        # mps: a list of metapath-based adjacency matrices
         if self.__cached_mps is None:
             self.__cached_mps = []
             mps = []
             for mp in self.metapaths_dict.values():
                 adj = dgl.metapath_reachable_graph(hg, mp).adjacency_matrix()
                 adj = self.normalize_adj(adj.to_dense()).to_sparse()  # torch_sparse
-                # adj = sp.from_torch_sparse(adj)
                 mps.append(adj)
             self.__cached_mps = mps
         return self.__cached_mps.copy()
@@ -395,7 +387,7 @@ class HGMAE(BaseModel):
             for mp in mps:
                 indices = mp.indices()
                 cur_graph = dgl.graph((indices[0], indices[1]))
-                cur_graph=dgl.add_self_loop(cur_graph)
+                cur_graph = dgl.add_self_loop(cur_graph)
                 gs.append(cur_graph)
             self.__cached_gs = gs
         return self.__cached_gs.copy()
@@ -500,23 +492,19 @@ class HGMAE(BaseModel):
         mps = self.get_mps(hg)
         gs = self.mps_to_gs(mps)
 
-
         # TAR
         attr_restore_loss, enc_emb = self.mask_attr_restoration(gs, feat, epoch)
-        # attr_restore_loss *= self.attr_restore_loss_weight
-        loss=attr_restore_loss*self.attr_restore_loss_weight
+        loss = attr_restore_loss * self.attr_restore_loss_weight
 
         # MER
         mp_edge_recon_loss = self.mp_edge_recon_loss_weight * self.mask_mp_edge_reconstruction(mps, feat, epoch)
-        loss+=mp_edge_recon_loss
+        loss += mp_edge_recon_loss
 
         # PFP
         mp2vec_feat_pred = self.enc_out_to_mp2vec_feat_mapping(enc_emb)  # H3
         mp2vec_feat_pred_loss = self.mp2vec_feat_pred_loss_weight * self.mp2vec_feat_pred_loss(mp2vec_feat_pred,
-                                                                                                mp2vec_feat)
-        loss+=mp2vec_feat_pred_loss
-
-        # loss = mp_edge_recon_loss + attr_restore_loss + mp2vec_feat_pred_loss
+                                                                                               mp2vec_feat)
+        loss += mp2vec_feat_pred_loss
 
         return loss
 
@@ -565,7 +553,6 @@ class HAN(nn.Module):
                  negative_slope,
                  residual,
                  norm,
-                 concat_out=False,
                  encoding=False
                  ):
         super(HAN, self).__init__()
@@ -574,7 +561,6 @@ class HAN(nn.Module):
         self.num_layers = num_layers
         self.han_layers = nn.ModuleList()
         self.activation = activation
-        self.concat_out = concat_out
 
         last_activation = activation if encoding else None
         last_residual = (encoding and residual)
@@ -596,7 +582,7 @@ class HAN(nn.Module):
             for l in range(1, num_layers - 1):
                 # due to multi-head, the in_dim = num_hidden * num_heads
                 self.han_layers.append(HANLayer(num_metapaths,
-                                                hidden_dim * hidden_dim, hidden_dim, num_heads,
+                                                hidden_dim * num_heads, hidden_dim, num_heads,
                                                 feat_drop, attn_drop, negative_slope, residual, self.activation,
                                                 norm=norm))
             # output projection

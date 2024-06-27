@@ -97,3 +97,52 @@ dblp:
 
 
 
+# --------------------- freebase ---------------------
+freebase:
+  dataset: freebase
+
+  in_dim: 3492
+  hidden_dim: 512
+  category: M
+  feat_drop: 0.1
+  attn_drop: 0.4
+  residual: false
+  negative_slope: 0.2
+  num_classes: 3
+  num_heads: 4
+  num_layers: 3
+  num_out_heads: 1
+
+  mp_edge_recon_loss_weight: 0.1
+  mp_edge_mask_rate: 0.5,0.005,0.8
+  mp_edge_gamma: 3
+
+  node_mask_rate: 0.5,0.001,0.8
+  attr_restore_loss_weight: 1
+  attr_restore_gamma: 3
+  attr_replace_rate: 0.3
+  attr_unchanged_rate: 0.2
+
+  mp2vec_negative_size: 3
+  mp2vec_window_size: 5
+  mp2vec_batch_size: 256
+  mp2vec_rw_length: 10
+  mp2vec_walks_per_node: 1
+  mp2vec_train_epoch: 50
+  mp2vec_train_lr: 0.001
+  mp2vec_feat_dim: 256
+  mp2vec_feat_pred_loss_weight: 0.1
+  mp2vec_feat_gamma: 3
+  mp2vec_feat_drop: 0
+
+  patience: 5
+  gpu: 0
+  mae_epochs: 10000
+  mae_lr: 0.001
+  l2_coef: 0
+  eva_lr: 0.01
+  eva_wd: 0.0001
+  scheduler_gamma: 0.999
+
+
+
