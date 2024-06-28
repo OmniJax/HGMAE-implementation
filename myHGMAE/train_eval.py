@@ -67,7 +67,7 @@ def evaluate(embeds, hg, args, ratio, isTest=True):
     macro_f1s_val = []
     auc_score_list = []
 
-    for _ in range(1):
+    for _ in range(10):
         log = LogReg(hid_units, args.num_classes)
         opt = torch.optim.Adam(log.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
         log.to(device)
@@ -212,13 +212,42 @@ if __name__ == "__main__":
     # trained_mp2vec_feat_dict = torch.load('./my_freebase_mp2vec_feat.th')
     trained_mp2vec_feat_dict = None
 
-    model = HGMAE.build_model_from_args(args, hg, meta_paths_dict).to("cuda")
-    embeds = train(model, hg, h_dict, trained_mp2vec_feat_dict, args)
+    macro_score_list, micro_score_list, auc_score_list = {}, {}, {}
+    macro_score_list[20] = []
+    macro_score_list[40] = []
+    macro_score_list[60] = []
 
-    macro_score_list, micro_score_list, auc_score_list = [], [], []
-    for ratio in [20, 40, 60]:
-        macro_score, micro_score, auc_score = evaluate(embeds, hg, args, ratio)
+    micro_score_list[20] = []
+    micro_score_list[40] = []
+    micro_score_list[60] = []
 
-        macro_score_list.append(macro_score)
-        micro_score_list.append(micro_score)
-        auc_score_list.append(auc_score)
+    auc_score_list[20] = []
+    auc_score_list[40] = []
+    auc_score_list[60] = []
+
+    for _ in range(10):
+
+        model = HGMAE.build_model_from_args(args, hg, meta_paths_dict).to("cuda")
+        embeds = train(model, hg, h_dict, trained_mp2vec_feat_dict, args)
+
+        for ratio in [20, 40, 60]:
+            macro_score, micro_score, auc_score = evaluate(embeds, hg, args, ratio)
+
+            macro_score_list[ratio].append(macro_score)
+            micro_score_list[ratio].append(micro_score)
+            auc_score_list[ratio].append(auc_score)
+
+    for ratio in [20,40,60]:
+        print(ratio,"\t[Classification] Macro-F1: [{:.4f}, {:.4f}]  Micro-F1: [{:.4f}, {:.4f}]  auc: [{:.4f}, {:.4f}]"
+              .format(np.mean(macro_score_list[ratio]),
+                      np.std(macro_score_list[ratio]),
+                      np.mean(micro_score_list[ratio]),
+                      np.std(micro_score_list[ratio]),
+                      np.mean(auc_score_list[ratio]),
+                      np.std(auc_score_list[ratio])
+                      )
+              )
+
+    a=1+1
+    a=2+2
+

@@ -7,3 +7,4 @@ __pycache__/
 .idea/
 data/
 **/*.jupyterlab-workspace
+todo.md
